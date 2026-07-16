@@ -1,37 +1,86 @@
 """
-Build the graph with multiple agents/tools/llm nodes with Routing node here
-[for invocation use different file to call this graph/agent workflow with user prompt]
-
-To build the Multi-Agent system we have to use different pattern depending on NEED:[for not prefer Routing]
-- Routing : most easy, a LLM says which agent to Invoke next -> a Router Node then executes the agent Graph/Node and goes to next LLM call
-- SubGraph : sub agents of a Parent Agent , parent agent invokes the subagent -> subagents does work and respond to parent agent
-- HandsOff : just invoke different agent based on a variable state (if LLM said, agent A done -> now as per logic invokes the agent B)
-- 
-
-As our is simple : 
-user query -> LLM Node decides which to invoke-> router Node execute the Agent node -> invokes Agent A/B/C  -> goes back to LLM Node decides what to use.
-thus its subagent but with simplification, agents stays at same level of Hierarchy.
-
-We are building here Agent
----
-
-WorkFlow vs Agent
-Workflows have predefined paths to go -> LLM invokes a certain agent in as per defined. Researcher First -> writer -> publisher.
-path is decided (could be cyclic/loop or simple or Dag) but overall flow is predefined.
-
-Agentic AI: all agents are acts as Tools to LLM and LLM decides what to invoke or what to use.
-  AgentA : Task it does(boundries) + tools it has
-  AgentB : Task it does + tools it has
-  WeatherAgent : task it does + tools it has [here agent is simple a tool or API call nothing complex] but When to use this is Entirely on LLM. 
-
-
-Langchain provides Higher level things to build both of them  
-Agent: [ create agent mostly ReAct--main one , add tools-here a agent can be tool also, pass all tools to agent ]
-WorkFlow : using chains concept , pass one agent output to other chains in a predefined path
-
-LangGraph provides fine controlled level to do this with cusomization. 
-Agent: Main Agent with Global State-> create Agents as Nodes with thier tools -> make these agentsA,B,.. as tool for Main Agent to decide when to use. Issue is everything get a bit complicated a bit due to State/HITL,nested tools etc.
-WorkFlow : Main Agent /LLm + Router Node -> create Agents as Nodes with their tools -> add them as per Flow in Main Graph with router node/conditional edges 
-
+Router-Based LangGraph Workflow
+This workflow uses a central LLM "supervisor" to decide the flow of execution between
+different agent nodes (researcher, writer, publisher).
 """
 
+from langchain_core.messages import SystemMessage
+from langgraph.graph import StateGraph, START, END
+
+from state import AgentState
+from llm import llm
+from nodes.researcher import research_node
+from nodes.writer import write_node
+from nodes.publisher import publish_node
+
+def supervisor_node(state: AgentState):
+    """The router that decides who should act next."""
+    print("--- 🧠 SUPERVISOR: Deciding next step ---")
+    
+    # We provide a strict prompt so it only responds with the exact node name
+    system_prompt = (
+        "You are a supervisor managing a content creation workflow. "
+        "Based on the task and current progress, decide who should act next.\n"
+        "Respond strictly with ONE WORD ONLY, choosing from: researcher, writer, publisher, FINISH.\n"
+        "- Choose 'researcher' if research data is missing.\n"
+        "- Choose 'writer' if research is done but content is not written.\n"
+        "- Choose 'publisher' if content is written but not published.\n"
+        "- Choose 'FINISH' if the content has been successfully published."
+    )
+    
+    # We just feed it the system prompt and whatever messages have accumulated
+    messages = [SystemMessage(content=system_prompt)] + state.get("messages", [])
+    response = llm.invoke(messages)
+    
+    # Parse the LLM's decision robustly
+    decision = response.content.strip().lower()
+    if "researcher" in decision: 
+        next_node = "researcher"
+    elif "writer" in decision: 
+        next_node = "writer"
+    elif "publisher" in decision: 
+        next_node = "publisher"
+    else: 
+        next_node = "FINISH"
+        
+    print(f"    -> Routing to: {next_node.upper()}")
+    return {"next_node": next_node}
+
+def router_function(state: AgentState):
+    """The conditional routing function for the graph."""
+    next_node = state.get("next_node")
+    if next_node == "FINISH":
+        return END
+    return next_node
+
+# --- Build the Graph ---
+workflow = StateGraph(AgentState)
+
+# Add all nodes
+workflow.add_node("supervisor", supervisor_node)
+workflow.add_node("researcher", research_node)
+workflow.add_node("writer", write_node)
+workflow.add_node("publisher", publish_node)
+
+# Set entry point
+workflow.add_edge(START, "supervisor")
+
+# The supervisor dynamically decides where to go
+workflow.add_conditional_edges(
+    "supervisor",
+    router_function,
+    {
+        "researcher": "researcher", 
+        "writer": "writer", 
+        "publisher": "publisher", 
+        END: END
+    }
+)
+
+# All workers report back to the supervisor when they are done
+workflow.add_edge("researcher", "supervisor")
+workflow.add_edge("writer", "supervisor")
+workflow.add_edge("publisher", "supervisor")
+
+# Compile the graph
+app = workflow.compile()
