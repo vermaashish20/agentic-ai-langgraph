@@ -1,12 +1,8 @@
-import operator
-from typing import Annotated, TypedDict
-from langchain_core.messages import BaseMessage
+from typing import TypedDict, List
+from langchain_core.documents import Document
 
 class AgentState(TypedDict):
-    """The global state of our content creation workflow."""
-    messages: Annotated[list[BaseMessage], operator.add]
-    task: str
-    research_data: str
-    content: str
-    publish_status: str
-    next_node: str
+    """The state of our Simple RAG workflow."""
+    question: str
+    context: List[Document]
+    answer: str
